@@ -1,10 +1,10 @@
-import React, { useState, useMemo, useRef } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { 
   Book, BookOpen, Bookmark, Upload, MoreHorizontal, 
   Search, ChevronDown, Check, Share, FolderInput, Trash2, 
   ChevronLeft, CheckCircle2, SlidersHorizontal, 
   Pin, GripVertical, Volume2, Type, List, Camera, Filter,
-  X, ChevronUp, ImagePlus
+  X, ChevronUp, ImagePlus, PlayCircle
 } from 'lucide-react';
 
 // --- 精準色碼與樣式設定 (Design System) ---
@@ -44,32 +44,57 @@ const presetBackgrounds = [
   { id: 'bg6', src: '08_powder_blue_mist.png' },
 ];
 
+// --- 預設類別清單 ---
+const BOOK_CATEGORIES = [
+  '玄幻', '奇幻', '武俠', '仙俠', '都市', '現實', '軍事', '歷史', '遊戲', '科幻', '懸疑', '輕小說', '漫畫'
+];
+
 export default function App() {
   const [tab, setTab] = useState("library");
   const [books, setBooks] = useState(initialBooks);
   const [bookmarks, setBookmarks] = useState(initialBookmarks);
   const [selectedBook, setSelectedBook] = useState(null);
   const [readerBook, setReaderBook] = useState(null);
+  
   const [keyword, setKeyword] = useState("");
   const [wikiKeyword, setWikiKeyword] = useState("范閒");
   const [bookmarkKeyword, setBookmarkKeyword] = useState("");
   const [showSortDropdown, setShowSortDropdown] = useState(false);
   const [showFilterDropdown, setShowFilterDropdown] = useState(false);
+  const [showCategoryDropdown, setShowCategoryDropdown] = useState(false); // 書櫃上方的類別單選選單
   const [isEditMode, setIsEditMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState([]);
   const [sortField, setSortField] = useState("recent");
   const [ascending, setAscending] = useState(false);
   const [formatFilters, setFormatFilters] = useState([]);
+  const [categoryFilter, setCategoryFilter] = useState(""); // 書櫃目前篩選的單一類別
 
   // --- 狀態提升 (避免重新渲染導致滑動條重置) ---
   const [uploadFormat, setUploadFormat] = useState('PDF');
   const [uploadFileName, setUploadFileName] = useState('');
   
+  // 新增：上傳表單的狀態
+  const [uploadTitle, setUploadTitle] = useState('');
+  const [uploadAuthor, setUploadAuthor] = useState('');
+  const [uploadCategories, setUploadCategories] = useState([]); // 改為陣列儲存複選類別
+  const [showUploadCategorySelect, setShowUploadCategorySelect] = useState(false); // 上傳表單的類別下拉選單
+  const [uploadDescription, setUploadDescription] = useState('');
+  const [uploadSource, setUploadSource] = useState('');
+  const [uploadCover, setUploadCover] = useState(null);
+  const [autoSummary, setAutoSummary] = useState(true);
+
   const [editingBook, setEditingBook] = useState(null);
   const [editData, setEditData] = useState(null);
 
   const [showReaderToolbar, setShowReaderToolbar] = useState(false);
   const [showReaderSettings, setShowReaderSettings] = useState(false);
+  
+  // 新增：自動翻頁狀態與 Ref
+  const [isAutoTurn, setIsAutoTurn] = useState(false);
+  const [autoTurnSpeed, setAutoTurnSpeed] = useState(2);
+  const [showAutoTurnSettings, setShowAutoTurnSettings] = useState(false);
+  const readerScrollRef = useRef(null);
+
   const fileInputRef = useRef(null);
 
   // --- 閱讀設定 State ---
@@ -88,12 +113,33 @@ export default function App() {
   const [customFonts, setCustomFonts] = useState([]);
   const fontFileInputRef = useRef(null);
 
+  // 新增：處理自動翻頁邏輯
+  useEffect(() => {
+    let interval;
+    if (isAutoTurn && readerBook && readerScrollRef.current) {
+      interval = setInterval(() => {
+         if (readerScrollRef.current) {
+           // 計算是否到底部，若到底部則自動停止
+           const { scrollTop, scrollHeight, clientHeight } = readerScrollRef.current;
+           if (scrollTop + clientHeight >= scrollHeight - 1) { 
+             setIsAutoTurn(false);
+           } else {
+             readerScrollRef.current.scrollTop += (autoTurnSpeed * 0.5); // 依據速度設定滾動量
+           }
+         }
+      }, 20); // 20ms 更新頻率，畫面較滑順
+    }
+    return () => clearInterval(interval);
+  }, [isAutoTurn, autoTurnSpeed, readerBook]);
+
   const filteredBooks = useMemo(() => {
     const lower = keyword.trim().toLowerCase();
     const list = books.filter((b) => {
       const keywordPass = !lower || b.title.toLowerCase().includes(lower) || b.author.toLowerCase().includes(lower);
       const formatPass = formatFilters.length === 0 || formatFilters.includes(b.format);
-      return keywordPass && formatPass;
+      // 新增類別篩選邏輯：如果沒有選擇類別，或是書籍的 category 包含所選類別
+      const categoryPass = !categoryFilter || b.category.includes(categoryFilter);
+      return keywordPass && formatPass && categoryPass;
     });
     list.sort((a, b) => {
       let r = 0;
@@ -104,7 +150,7 @@ export default function App() {
       return ascending ? r : -r;
     });
     return list;
-  }, [books, keyword, formatFilters, sortField, ascending]);
+  }, [books, keyword, formatFilters, sortField, ascending, categoryFilter]);
 
   const wikiBooks = useMemo(() => {
     const lower = wikiKeyword.trim().toLowerCase();
@@ -136,23 +182,60 @@ export default function App() {
     }
   };
 
-  const createDemoBook = () => {
+  const handleUploadSubmit = () => {
+    // 優先使用輸入框的名稱，若空則嘗試使用檔名，最後退回預設值
+    const finalTitle = uploadTitle.trim() || (uploadFileName ? uploadFileName.replace(/\.[^/.]+$/, "") : "未命名書籍");
+
+    // 防呆檢查：如果真的沒有書名也沒上傳檔案
+    if (finalTitle === "未命名書籍" && !uploadFileName && !uploadTitle.trim()) {
+      alert("請輸入書名或選擇上傳檔案！");
+      return;
+    }
+
     const newBook = {
       id: String(Date.now()),
-      title: "新上傳書籍",
-      author: "使用者",
-      category: "設計",
-      format: "PDF",
+      title: finalTitle,
+      author: uploadAuthor.trim() || "使用者",
+      category: uploadCategories.length > 0 ? uploadCategories.join(' / ') : "未分類",
+      format: uploadFormat,
       progress: 0,
       lastRead: "剛剛",
-      words: "2 萬",
-      cover: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&q=80&w=300',
-      description: "這是透過原型上傳功能動態加入的測試書籍。",
-      encyclopedia: "自動整理出摘要與關鍵字。",
+      words: "未知",
+      cover: uploadCover || 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&q=80&w=300',
+      description: uploadDescription.trim() || "這是一本新上傳的書籍。",
+      encyclopedia: autoSummary ? "自動摘要處理中..." : "未啟用自動摘要。",
       isComic: false
     };
+
     setBooks([newBook, ...books]);
+    
+    // 清空表單狀態
+    setUploadTitle('');
+    setUploadAuthor('');
+    setUploadCategories([]);
+    setUploadDescription('');
+    setUploadSource('');
+    setUploadCover(null);
+    setUploadFileName('');
+    setUploadFormat('PDF');
+    
     setTab("library");
+  };
+
+  const handleBookmarkClick = (item) => {
+    // 從書籤的 group 取出書名（例如 "慶餘年 (35)" -> "慶餘年"）
+    const bookTitleStr = item.group.split(' (')[0];
+    const targetBook = books.find(b => b.title === bookTitleStr) || books[0];
+    if (targetBook) {
+      setReaderBook(targetBook);
+    }
+  };
+
+  const handleSaveEdit = (editedBook) => {
+    setBooks(prev => prev.map(b => b.id === editedBook.id ? editedBook : b));
+    setSelectedBook(editedBook);
+    setEditingBook(null);
+    setEditData(null);
   };
 
   const currentBgColor = readerTheme === 'night' ? '#1A1A1A' : readerTheme === 'day' ? '#F9F8F5' : '#FDFCF8';
@@ -175,13 +258,13 @@ export default function App() {
   };
 
   // ============================================================================
-  // Views (改為函式回傳，避免元件重製與失去焦點)
+  // Views
   // ============================================================================
 
   const renderLibraryView = () => (
-    <div className={`min-h-full pb-24 px-5 pt-12 ${THEME.bg}`}>
-      {(showSortDropdown || showFilterDropdown) && (
-        <div className="fixed inset-0 z-20" onClick={() => { setShowSortDropdown(false); setShowFilterDropdown(false); }} />
+    <div className={`pb-[120px] px-5 pt-12 ${THEME.bg}`}>
+      {(showSortDropdown || showFilterDropdown || showCategoryDropdown) && (
+        <div className="fixed inset-0 z-20" onClick={() => { setShowSortDropdown(false); setShowFilterDropdown(false); setShowCategoryDropdown(false); }} />
       )}
 
       <div className={`flex items-center px-4 py-3 rounded-xl ${THEME.surface} border border-[#F0EBE1] shadow-[0_2px_12px_rgba(0,0,0,0.03)] mb-5 relative z-10`}>
@@ -190,23 +273,26 @@ export default function App() {
       </div>
 
       <div className="flex justify-end gap-2.5 mb-6 relative z-30">
-         <button onClick={() => { setShowSortDropdown(!showSortDropdown); setShowFilterDropdown(false); }} className={`flex items-center px-3.5 py-1.5 rounded-lg text-[14px] font-medium transition-colors ${showSortDropdown ? THEME.accentBg + ' text-white shadow-md' : 'bg-[#F7F3EB] text-[#8C867E] border border-[#EAE4DB] shadow-sm'}`}>
+         <button onClick={() => { setShowSortDropdown(!showSortDropdown); setShowFilterDropdown(false); setShowCategoryDropdown(false); }} className={`flex items-center px-3.5 py-1.5 rounded-lg text-[14px] font-medium transition-colors ${showSortDropdown ? THEME.accentBg + ' text-white shadow-md' : 'bg-[#F7F3EB] text-[#8C867E] border border-[#EAE4DB] shadow-sm'}`}>
            排序 <ChevronDown className="w-3.5 h-3.5 ml-1" />
          </button>
-         <button onClick={() => { setShowFilterDropdown(!showFilterDropdown); setShowSortDropdown(false); }} className={`flex items-center px-3.5 py-1.5 rounded-lg text-[14px] font-medium transition-colors ${showFilterDropdown ? THEME.accentBg + ' text-white shadow-md' : 'bg-[#F7F3EB] text-[#8C867E] border border-[#EAE4DB] shadow-sm'}`}>
+         <button onClick={() => { setShowCategoryDropdown(!showCategoryDropdown); setShowSortDropdown(false); setShowFilterDropdown(false); }} className={`flex items-center px-3.5 py-1.5 rounded-lg text-[14px] font-medium transition-colors ${categoryFilter || showCategoryDropdown ? THEME.accentBg + ' text-white shadow-md' : 'bg-[#F7F3EB] text-[#8C867E] border border-[#EAE4DB] shadow-sm'}`}>
+           {categoryFilter || "類別"} <ChevronDown className="w-3.5 h-3.5 ml-1" />
+         </button>
+         <button onClick={() => { setShowFilterDropdown(!showFilterDropdown); setShowSortDropdown(false); setShowCategoryDropdown(false); }} className={`flex items-center px-3.5 py-1.5 rounded-lg text-[14px] font-medium transition-colors ${showFilterDropdown ? THEME.accentBg + ' text-white shadow-md' : 'bg-[#F7F3EB] text-[#8C867E] border border-[#EAE4DB] shadow-sm'}`}>
            分類 <ChevronDown className="w-3.5 h-3.5 ml-1" />
          </button>
-         <button onClick={() => { setIsEditMode(!isEditMode); setSelectedIds([]); setShowSortDropdown(false); setShowFilterDropdown(false); }} className={`px-4 py-1.5 rounded-lg text-[14px] font-medium transition-colors ${isEditMode ? THEME.accentBg + ' text-white shadow-md' : 'bg-[#F7F3EB] text-[#8C867E] border border-[#EAE4DB] shadow-sm'}`}>
+         <button onClick={() => { setIsEditMode(!isEditMode); setSelectedIds([]); setShowSortDropdown(false); setShowFilterDropdown(false); setShowCategoryDropdown(false); }} className={`px-4 py-1.5 rounded-lg text-[14px] font-medium transition-colors ${isEditMode ? THEME.accentBg + ' text-white shadow-md' : 'bg-[#F7F3EB] text-[#8C867E] border border-[#EAE4DB] shadow-sm'}`}>
            {isEditMode ? '完成' : '編輯'}
          </button>
 
          {showSortDropdown && !isEditMode && (
-           <div className="absolute top-10 right-[88px] w-36 bg-white rounded-xl shadow-[0_8px_30px_rgba(0,0,0,0.08)] border border-[#F0EBE1] py-1.5 z-40 animate-in fade-in slide-in-from-top-2">
+           <div className="absolute top-10 right-[152px] w-36 bg-white rounded-xl shadow-[0_8px_30px_rgba(0,0,0,0.08)] border border-[#F0EBE1] py-1.5 z-40 animate-in fade-in slide-in-from-top-2">
              {[
                { id: "recent", label: "最近閱讀" },
                { id: "title", label: "書名" },
                { id: "author", label: "作者" },
-               { id: "category", label: "分類" }
+               { id: "category", label: "類別" }
              ].map((opt) => (
                 <button key={opt.id} onClick={() => { setSortField(opt.id); setShowSortDropdown(false); }} className={`w-full flex justify-between items-center px-4 py-2.5 text-[14px] ${sortField === opt.id ? 'text-[#C59B58] bg-[#FDFBF7] font-medium' : 'text-[#5C5751] hover:bg-[#F9F7F3]'}`}>
                   {opt.label} {sortField === opt.id && <Check className="w-4 h-4" />}
@@ -215,6 +301,29 @@ export default function App() {
              <div className="h-[1px] bg-[#F0EBE1] my-1 mx-3" />
              <button onClick={() => { setAscending(true); setShowSortDropdown(false); }} className={`w-full flex justify-between items-center px-4 py-2.5 text-[14px] ${ascending ? 'text-[#C59B58] font-medium' : 'text-[#5C5751] hover:bg-[#F9F7F3]'}`}>正序 {ascending && <Check className="w-4 h-4" />}</button>
              <button onClick={() => { setAscending(false); setShowSortDropdown(false); }} className={`w-full flex justify-between items-center px-4 py-2.5 text-[14px] ${!ascending ? 'text-[#C59B58] font-medium' : 'text-[#5C5751] hover:bg-[#F9F7F3]'}`}>倒序 {!ascending && <Check className="w-4 h-4" />}</button>
+           </div>
+         )}
+
+         {showCategoryDropdown && !isEditMode && (
+           <div className="absolute top-10 right-[88px] w-48 bg-white rounded-xl shadow-[0_8px_30px_rgba(0,0,0,0.08)] border border-[#F0EBE1] py-1.5 z-40 animate-in fade-in slide-in-from-top-2 max-h-64 overflow-y-auto no-scrollbar">
+             <button 
+                onClick={() => { setCategoryFilter(""); setShowCategoryDropdown(false); }} 
+                className={`w-full flex justify-between items-center px-4 py-2.5 text-[14px] ${categoryFilter === "" ? 'text-[#C59B58] bg-[#FDFBF7] font-medium' : 'text-[#5C5751] hover:bg-[#F9F7F3]'}`}
+             >
+                全部類別 {categoryFilter === "" && <Check className="w-4 h-4" />}
+             </button>
+             <div className="h-[1px] bg-[#F0EBE1] my-1 mx-3" />
+             <div className="grid grid-cols-2 gap-x-2 px-2">
+                 {BOOK_CATEGORIES.map((cat) => (
+                    <button 
+                      key={cat} 
+                      onClick={() => { setCategoryFilter(cat); setShowCategoryDropdown(false); }} 
+                      className={`w-full flex justify-start items-center px-3 py-2 text-[13px] rounded-md mb-1 ${categoryFilter === cat ? 'text-[#C59B58] bg-[#F5ECD9] font-medium' : 'text-[#5C5751] hover:bg-[#F9F7F3]'}`}
+                    >
+                      {cat}
+                    </button>
+                 ))}
+             </div>
            </div>
          )}
 
@@ -277,7 +386,6 @@ export default function App() {
       {isEditMode && (
         <div className="fixed bottom-[90px] left-5 right-5 bg-[#FCFAF6] rounded-2xl shadow-[0_4px_24px_rgba(0,0,0,0.08)] border border-[#EAE4DB] p-3 flex justify-around items-center z-40 animate-in slide-in-from-bottom-5">
           <button className="flex flex-col items-center gap-1.5 w-16" onClick={() => alert("分享選取的書籍")}><Share className="w-5 h-5 text-[#8C867E]" /><span className="text-[12px] font-medium text-[#5C5751]">分享</span></button>
-          <button className="flex flex-col items-center gap-1.5 w-16" onClick={() => alert("移動選取的書籍")}><FolderInput className="w-5 h-5 text-[#8C867E]" /><span className="text-[12px] font-medium text-[#5C5751]">移動</span></button>
           <button onClick={deleteSelected} className="flex flex-col items-center gap-1.5 w-16"><Trash2 className={`w-5 h-5 ${selectedIds.length > 0 ? 'text-[#E0645A]' : 'text-[#E0645A]/50'}`} /><span className={`text-[12px] font-medium ${selectedIds.length > 0 ? 'text-[#E0645A]' : 'text-[#E0645A]/50'}`}>刪除</span></button>
         </div>
       )}
@@ -285,7 +393,7 @@ export default function App() {
   );
 
   const renderWikiView = () => (
-    <div className={`min-h-full pb-24 px-5 pt-12 ${THEME.bg}`}>
+    <div className={`pb-[120px] px-5 pt-12 ${THEME.bg}`}>
       <div className={`flex items-center px-4 py-3 rounded-xl ${THEME.surface} border border-[#F0EBE1] mb-5 shadow-sm`}>
         <Search className={`w-[18px] h-[18px] text-[#A69E94] mr-2`} />
         <input type="text" value={wikiKeyword} onChange={e => setWikiKeyword(e.target.value)} placeholder="搜尋書名 / 人物 / 關鍵字" className={`bg-transparent outline-none text-[15px] w-full ${THEME.textMain} placeholder:text-[#BDB6AC] font-medium`} />
@@ -321,7 +429,7 @@ export default function App() {
   );
 
   const renderBookmarksView = () => (
-    <div className={`min-h-full pb-24 pt-12 ${THEME.bg}`}>
+    <div className={`pb-[120px] pt-12 ${THEME.bg}`}>
       <div className="px-5 mb-5 flex items-center gap-3">
         <div className={`flex-1 flex items-center px-4 py-3 rounded-xl ${THEME.surface} border border-[#F0EBE1] shadow-sm`}>
           <Search className={`w-[18px] h-[18px] text-[#A69E94] mr-2`} />
@@ -355,7 +463,7 @@ export default function App() {
             
             <div className="divide-y divide-[#F5F2EC]">
               {items.map(item => (
-                <div key={item.id} className="relative overflow-hidden bg-white group cursor-pointer hover:bg-[#FDFCF8]">
+                <div key={item.id} className="relative overflow-hidden bg-white group cursor-pointer hover:bg-[#FDFCF8]" onClick={() => handleBookmarkClick(item)}>
                    <div className="px-5 py-4 flex gap-3 relative">
                       {item.pinned && <div className="w-[3px] h-[40px] absolute left-0 top-[20%] bg-[#C59B58] rounded-r"></div>}
                       <div className="flex-1 pl-1">
@@ -377,12 +485,44 @@ export default function App() {
   const renderUploadView = () => {
     const handleFileChange = (e) => {
       if (e.target.files && e.target.files.length > 0) {
-        setUploadFileName(e.target.files[0].name);
+        const file = e.target.files[0];
+        setUploadFileName(file.name);
+        
+        // 自動帶入檔名作為書名
+        if (!uploadTitle) {
+          setUploadTitle(file.name.replace(/\.[^/.]+$/, ""));
+        }
+        
+        // 根據上傳的檔案副檔名，自動切換上方格式按鈕的選取狀態
+        const extension = file.name.split('.').pop().toUpperCase();
+        if (['PDF', 'TXT', 'EPUB'].includes(extension)) {
+            setUploadFormat(extension);
+        } else {
+            setUploadFormat('其他');
+        }
       }
     };
 
+    const handleCoverUpload = (e) => {
+      if (e.target.files && e.target.files.length > 0) {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          setUploadCover(reader.result);
+        };
+        reader.readAsDataURL(e.target.files[0]);
+      }
+    };
+
+    // 依據目前選取的格式，決定 input accept 的屬性
+    const getAcceptFormat = () => {
+        if (uploadFormat === 'PDF') return '.pdf';
+        if (uploadFormat === 'TXT') return '.txt';
+        if (uploadFormat === 'EPUB') return '.epub';
+        return '*'; // 其他格式
+    };
+
     return (
-      <div className={`min-h-full pb-24 px-5 pt-12 ${THEME.bg}`}>
+      <div className={`pb-[120px] px-5 pt-12 ${THEME.bg}`}>
         <div className="flex justify-between items-center mb-8">
           <ChevronLeft className="w-6 h-6 text-[#2C2925]" />
           <h2 className="text-[18px] font-bold text-[#2C2925]">上傳書籍</h2>
@@ -394,7 +534,8 @@ export default function App() {
             <h3 className="text-[16px] font-bold text-[#2C2925] mb-4 flex items-center gap-2">
               <span className="w-[22px] h-[22px] rounded-full bg-[#C59B58] text-white flex items-center justify-center text-[12px]">1</span> 選擇檔案
             </h3>
-            <div className="grid grid-cols-4 gap-2.5 mb-3">
+            
+            <div className="grid grid-cols-4 gap-2.5 mb-3 relative">
                {['PDF', 'TXT', 'EPUB', '其他'].map((f) => {
                   const isActive = uploadFormat === f;
                   let dotColor = 'bg-[#D8D2C9]';
@@ -402,33 +543,51 @@ export default function App() {
                   else if (f === 'TXT') dotColor = 'bg-[#5D8CE0]';
                   else if (f === 'EPUB') dotColor = 'bg-[#569D67]';
 
+                  let acceptProp = '*';
+                  if (f === 'PDF') acceptProp = '.pdf';
+                  else if (f === 'TXT') acceptProp = '.txt';
+                  else if (f === 'EPUB') acceptProp = '.epub';
+
                   return (
-                    <button 
+                    <label 
                       key={f} 
-                      onClick={() => setUploadFormat(f)}
-                      className={`py-2.5 rounded-xl border flex items-center justify-center gap-1.5 text-[13px] font-medium shadow-sm transition-colors ${isActive ? THEME.accentBorder + ' bg-[#FDFCF8] text-[#C59B58]' : 'border-[#EAE4DB] bg-white text-[#8C867E] hover:bg-gray-50'}`}
+                      className={`relative py-2.5 rounded-xl border flex items-center justify-center gap-1.5 text-[13px] font-medium shadow-sm transition-colors cursor-pointer overflow-hidden ${isActive ? THEME.accentBorder + ' bg-[#FDFCF8] text-[#C59B58]' : 'border-[#EAE4DB] bg-white text-[#8C867E] hover:bg-gray-50'}`}
                     >
-                      <div className={`w-3.5 h-3.5 ${dotColor} rounded-[4px] flex items-center justify-center`}>
+                      <input 
+                          type="file" 
+                          className="absolute inset-0 opacity-0 cursor-pointer w-full h-full" 
+                          accept={acceptProp}
+                          onChange={(e) => {
+                              setUploadFormat(f);
+                              handleFileChange(e);
+                          }} 
+                      />
+                      <div className={`w-3.5 h-3.5 ${dotColor} rounded-[4px] flex items-center justify-center pointer-events-none`}>
                         {isActive && <div className="w-1.5 h-1.5 bg-white rounded-[1px]"></div>}
                       </div>
-                      {f}
-                    </button>
+                      <span className="pointer-events-none">{f}</span>
+                    </label>
                   );
                })}
             </div>
             
             <label className="bg-[#FDFCF8] border border-[#EAE4DB] rounded-2xl p-4 flex justify-between items-center shadow-sm cursor-pointer hover:bg-white active:bg-[#F5ECD9] transition-colors relative overflow-hidden group">
-               <input type="file" className="absolute inset-0 opacity-0 cursor-pointer w-full h-full" onChange={handleFileChange} />
+               <input 
+                   type="file" 
+                   className="absolute inset-0 opacity-0 cursor-pointer w-full h-full" 
+                   accept={getAcceptFormat()}
+                   onChange={handleFileChange} 
+                />
                <div className="flex items-center gap-3 pointer-events-none">
                  <FolderInput className={`w-6 h-6 ${uploadFileName ? 'text-[#C59B58]' : 'text-[#A69E94]'}`} />
                  <div className="flex flex-col">
-                   <p className={`text-[15px] font-bold leading-tight mb-1 truncate max-w-[140px] ${uploadFileName ? 'text-[#C59B58]' : 'text-[#2C2925]'}`}>{uploadFileName || 'ZIP / RAR'}</p>
-                   <p className="text-[12px] text-[#8C867E] truncate">{uploadFileName ? '已選擇檔案' : '上傳後將自動解壓'}</p>
+                   <p className={`text-[15px] font-bold leading-tight mb-1 truncate max-w-[140px] ${uploadFileName ? 'text-[#C59B58]' : 'text-[#2C2925]'}`}>{uploadFileName || '請選擇檔案'}</p>
+                   <p className="text-[12px] text-[#8C867E] truncate">{uploadFileName ? '已選擇檔案' : '支援 PDF / TXT / EPUB'}</p>
                  </div>
                </div>
                <span className={`text-[12px] font-medium flex items-center gap-1.5 px-3 py-1.5 rounded-lg shrink-0 pointer-events-none ${uploadFileName ? 'text-[#C59B58] border border-[#C59B58]/30 bg-[#C59B58]/10' : 'text-[#569D67] border border-[#569D67]/30 bg-[#569D67]/5'}`}>
                   {uploadFileName ? <Check className="w-4 h-4" /> : <CheckCircle2 className="w-4 h-4" />} 
-                  {uploadFileName ? '已就緒' : '自動解壓'}
+                  {uploadFileName ? '已就緒' : '自動解析'}
                </span>
             </label>
           </div>
@@ -440,36 +599,83 @@ export default function App() {
             <div className="space-y-5 bg-white p-5 rounded-2xl border border-[#EAE4DB] shadow-sm">
               <div className="flex items-center border border-[#EAE4DB] rounded-xl px-4 py-3 bg-[#FDFCF8]">
                 <label className="w-[60px] text-[14px] text-[#2C2925] font-medium">書名<span className="text-[#E0645A] ml-0.5">*</span></label>
-                <input type="text" placeholder="請輸入書名" className="flex-1 bg-transparent text-[14px] outline-none placeholder:text-[#D8D2C9]" />
+                <input type="text" value={uploadTitle} onChange={e => setUploadTitle(e.target.value)} placeholder="請輸入書名" className="flex-1 bg-transparent text-[14px] outline-none placeholder:text-[#D8D2C9]" />
               </div>
               <div className="flex items-center border border-[#EAE4DB] rounded-xl px-4 py-3 bg-[#FDFCF8]">
                 <label className="w-[60px] text-[14px] text-[#2C2925] font-medium">作者</label>
-                <input type="text" placeholder="請輸入作者" className="flex-1 bg-transparent text-[14px] outline-none placeholder:text-[#D8D2C9]" />
+                <input type="text" value={uploadAuthor} onChange={e => setUploadAuthor(e.target.value)} placeholder="請輸入作者" className="flex-1 bg-transparent text-[14px] outline-none placeholder:text-[#D8D2C9]" />
               </div>
-              <div className="flex items-center border border-[#EAE4DB] rounded-xl px-4 py-3 bg-[#FDFCF8]">
-                <label className="w-[60px] text-[14px] text-[#2C2925] font-medium">分類</label>
-                <input type="text" placeholder="請選擇分類" className="flex-1 bg-transparent text-[14px] outline-none placeholder:text-[#D8D2C9]" />
-                <ChevronDown className="w-4 h-4 text-[#A69E94]" />
+              
+              <div className="relative">
+                <div 
+                  className="flex items-center border border-[#EAE4DB] rounded-xl px-4 py-3 bg-[#FDFCF8] cursor-pointer"
+                  onClick={() => setShowUploadCategorySelect(!showUploadCategorySelect)}
+                >
+                  <label className="w-[60px] text-[14px] text-[#2C2925] font-medium cursor-pointer">類別</label>
+                  <div className="flex-1 flex gap-1.5 flex-wrap">
+                    {uploadCategories.length === 0 ? (
+                      <span className="text-[#D8D2C9] text-[14px]">請選擇類別 (可複選)</span>
+                    ) : (
+                      uploadCategories.map(cat => (
+                         <span key={cat} className="text-[12px] bg-[#C59B58]/10 text-[#C59B58] px-2 py-0.5 rounded-md flex items-center gap-1">
+                           {cat}
+                           <X className="w-3 h-3 cursor-pointer" onClick={(e) => { e.stopPropagation(); setUploadCategories(prev => prev.filter(c => c !== cat)); }} />
+                         </span>
+                      ))
+                    )}
+                  </div>
+                  <ChevronDown className={`w-4 h-4 text-[#A69E94] transition-transform ${showUploadCategorySelect ? 'rotate-180' : ''}`} />
+                </div>
+
+                {showUploadCategorySelect && (
+                  <>
+                    <div className="fixed inset-0 z-30" onClick={() => setShowUploadCategorySelect(false)} />
+                    <div className="absolute top-full left-0 right-0 mt-2 bg-white rounded-xl shadow-[0_8px_30px_rgba(0,0,0,0.12)] border border-[#F0EBE1] p-3 z-40 animate-in fade-in slide-in-from-top-2">
+                      <div className="flex flex-wrap gap-2">
+                        {BOOK_CATEGORIES.map(cat => (
+                           <button
+                             key={cat}
+                             onClick={() => setUploadCategories(prev => prev.includes(cat) ? prev.filter(c => c !== cat) : [...prev, cat])}
+                             className={`px-3 py-1.5 text-[13px] rounded-lg border transition-colors ${uploadCategories.includes(cat) ? 'bg-[#C59B58] text-white border-transparent' : 'bg-white text-[#5C5751] border-[#EAE4DB] hover:bg-[#F9F7F3]'}`}
+                           >
+                             {cat}
+                           </button>
+                        ))}
+                      </div>
+                      <div className="flex justify-end mt-3 pt-2 border-t border-[#F0EBE1]">
+                        <button onClick={() => setShowUploadCategorySelect(false)} className="text-[13px] text-[#C59B58] font-bold px-3 py-1">確定</button>
+                      </div>
+                    </div>
+                  </>
+                )}
               </div>
+
               <div className="flex items-start border border-[#EAE4DB] rounded-xl px-4 py-3 bg-[#FDFCF8]">
                 <label className="w-[60px] text-[14px] text-[#2C2925] font-medium mt-1">介紹</label>
                 <div className="flex-1 relative">
-                  <textarea placeholder="請輸入書籍簡介..." className="w-full bg-transparent text-[14px] h-20 outline-none resize-none placeholder:text-[#D8D2C9] leading-relaxed"></textarea>
-                  <div className="absolute bottom-0 right-0 text-[10px] text-[#BDB6AC]">0/500</div>
+                  <textarea value={uploadDescription} onChange={e => setUploadDescription(e.target.value)} maxLength={500} placeholder="請輸入書籍簡介..." className="w-full bg-transparent text-[14px] h-20 outline-none resize-none placeholder:text-[#D8D2C9] leading-relaxed"></textarea>
+                  <div className="absolute bottom-0 right-0 text-[10px] text-[#BDB6AC]">{uploadDescription.length}/500</div>
                 </div>
               </div>
               
               <div>
                 <label className="text-[14px] text-[#2C2925] font-medium block mb-3">封面上傳</label>
-                <div className="w-full h-24 border-2 border-dashed border-[#D8D2C9] rounded-xl flex flex-col items-center justify-center text-[#A69E94] bg-[#FDFCF8] cursor-pointer hover:bg-white transition-colors">
-                  <Camera className="w-6 h-6 mb-2 text-[#C59B58]" />
-                  <span className="text-[13px] font-medium text-[#5C5751]">拍照 / 上傳檔案</span>
-                </div>
+                <label className="w-full h-24 border-2 border-dashed border-[#D8D2C9] rounded-xl flex flex-col items-center justify-center text-[#A69E94] bg-[#FDFCF8] cursor-pointer hover:bg-white transition-colors relative overflow-hidden">
+                  <input type="file" accept="image/*" onChange={handleCoverUpload} className="hidden" />
+                  {uploadCover ? (
+                    <img src={uploadCover} alt="Cover Preview" className="w-full h-full object-cover" />
+                  ) : (
+                    <>
+                      <Camera className="w-6 h-6 mb-2 text-[#C59B58]" />
+                      <span className="text-[13px] font-medium text-[#5C5751]">拍照 / 上傳檔案</span>
+                    </>
+                  )}
+                </label>
               </div>
               
               <div>
                  <label className="text-[14px] text-[#2C2925] font-medium block mb-2">來源網址 <span className="text-[#A69E94] text-[12px] font-normal">(選填)</span></label>
-                 <input type="text" placeholder="https://example.com/book" className="w-full border border-[#EAE4DB] rounded-xl px-4 py-3 bg-[#FDFCF8] text-[14px] outline-none placeholder:text-[#D8D2C9]" />
+                 <input type="text" value={uploadSource} onChange={e => setUploadSource(e.target.value)} placeholder="https://example.com/book" className="w-full border border-[#EAE4DB] rounded-xl px-4 py-3 bg-[#FDFCF8] text-[14px] outline-none placeholder:text-[#D8D2C9]" />
               </div>
             </div>
           </div>
@@ -480,8 +686,9 @@ export default function App() {
             </h3>
             <div className="flex justify-between items-center bg-white border border-[#EAE4DB] p-4 rounded-xl shadow-sm">
               <label className="flex items-center gap-3 text-[14px] text-[#2C2925] font-medium cursor-pointer">
-                 <div className="w-[18px] h-[18px] border border-[#C59B58] bg-white rounded-[4px] flex items-center justify-center">
-                   <Check className="w-[12px] h-[12px] text-[#C59B58]" strokeWidth={3} />
+                 <input type="checkbox" checked={autoSummary} onChange={(e) => setAutoSummary(e.target.checked)} className="hidden" />
+                 <div className={`w-[18px] h-[18px] border bg-white rounded-[4px] flex items-center justify-center transition-colors ${autoSummary ? 'border-[#C59B58]' : 'border-[#D8D2C9]'}`}>
+                   {autoSummary && <Check className="w-[12px] h-[12px] text-[#C59B58]" strokeWidth={3} />}
                  </div>
                  自動生成書籍摘要
               </label>
@@ -489,7 +696,7 @@ export default function App() {
             </div>
           </div>
 
-          <button onClick={createDemoBook} className="w-full py-4 bg-[#C59B58] text-white rounded-2xl text-[17px] font-bold shadow-[0_6px_20px_rgba(197,155,88,0.3)] mt-6 tracking-widest hover:bg-[#B38C4F] transition-colors">
+          <button onClick={handleUploadSubmit} className="w-full py-4 bg-[#C59B58] text-white rounded-2xl text-[17px] font-bold shadow-[0_6px_20px_rgba(197,155,88,0.3)] mt-6 tracking-widest hover:bg-[#B38C4F] transition-colors">
             開始上傳
           </button>
         </div>
@@ -534,7 +741,7 @@ export default function App() {
         </div>
 
         {/* 2. 獨立滾動的設定操作區 */}
-        <div className="flex-1 overflow-y-auto no-scrollbar pb-24 px-5 pt-5 space-y-6">
+        <div className="flex-1 overflow-y-auto no-scrollbar pb-[120px] px-5 pt-5 space-y-6">
           
           <div className="bg-white p-4 rounded-2xl border border-[#EAE4DB] shadow-sm">
             <h4 className="text-[14px] font-bold text-[#2C2925] mb-3">翻頁模式</h4>
@@ -832,13 +1039,13 @@ export default function App() {
     return (
       <div className="absolute inset-0 z-[70] flex flex-col transition-colors duration-300" style={getReaderBackgroundStyle()}>
         
-        {showReaderSettings && (
-          <div className="absolute inset-0 z-10" onClick={() => setShowReaderSettings(false)} />
+        {(showReaderSettings || showAutoTurnSettings) && (
+          <div className="absolute inset-0 z-10" onClick={() => { setShowReaderSettings(false); setShowAutoTurnSettings(false); }} />
         )}
 
         <div className={`absolute top-0 left-0 right-0 p-4 pt-12 md:pt-12 flex justify-between items-center transition-transform duration-300 z-20 ${showReaderToolbar ? 'translate-y-0' : '-translate-y-full'} bg-[#FDFCF8]/95 backdrop-blur-md border-b border-[#EAE4DB]`}>
           <div className="flex items-center gap-3">
-            <button onClick={() => {setReaderBook(null); setShowReaderToolbar(false); setShowReaderSettings(false);}} className="p-2 -ml-2 rounded-full text-[#2C2925]">
+            <button onClick={() => {setReaderBook(null); setShowReaderToolbar(false); setShowReaderSettings(false); setShowAutoTurnSettings(false); setIsAutoTurn(false);}} className="p-2 -ml-2 rounded-full text-[#2C2925]">
               <ChevronLeft className="w-6 h-6" />
             </button>
             <div className="flex flex-col">
@@ -847,13 +1054,38 @@ export default function App() {
             </div>
           </div>
           <div className="flex items-center gap-3 text-[#2C2925] relative">
-            <button className="p-2" onClick={() => alert("語音朗讀功能示意")}><Volume2 className="w-5 h-5" /></button>
+            <button className="p-2 transition-transform hover:scale-110 active:scale-95" onClick={(e) => { e.stopPropagation(); alert("即將開啟語音朗讀功能"); }}><Volume2 className="w-5 h-5" /></button>
             
-            <button className={`p-2 rounded-full transition-colors ${showReaderSettings ? 'bg-[#F5ECD9] text-[#C59B58]' : ''}`} onClick={(e) => { e.stopPropagation(); setShowReaderSettings(!showReaderSettings); }}>
+            {/* 新增：自動翻頁設定 */}
+            <button className={`p-2 rounded-full transition-all hover:scale-110 active:scale-95 ${showAutoTurnSettings || isAutoTurn ? 'bg-[#F5ECD9] text-[#C59B58] scale-110' : ''}`} onClick={(e) => { e.stopPropagation(); setShowAutoTurnSettings(!showAutoTurnSettings); setShowReaderSettings(false); }}>
+               <PlayCircle className="w-5 h-5" />
+            </button>
+
+            <button className={`p-2 rounded-full transition-all hover:scale-110 active:scale-95 ${showReaderSettings ? 'bg-[#F5ECD9] text-[#C59B58] scale-110' : ''}`} onClick={(e) => { e.stopPropagation(); setShowReaderSettings(!showReaderSettings); setShowAutoTurnSettings(false); }}>
                <Type className="w-5 h-5" />
             </button>
-            <button className="p-2"><List className="w-5 h-5" /></button>
 
+            {/* 自動翻頁設定面板 */}
+            {showAutoTurnSettings && (
+              <div className="absolute top-14 right-14 w-64 bg-white rounded-2xl shadow-xl border border-[#EAE4DB] p-4 flex flex-col gap-4 animate-in fade-in slide-in-from-top-2 z-30" onClick={e => e.stopPropagation()}>
+                 <div className="flex justify-between items-center mb-2">
+                    <span className="text-[14px] font-bold text-[#2C2925]">自動翻頁 (滾動)</span>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input type="checkbox" className="sr-only peer" checked={isAutoTurn} onChange={() => setIsAutoTurn(!isAutoTurn)} />
+                      <div className="w-9 h-5 bg-[#EAE4DB] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#C59B58]"></div>
+                    </label>
+                 </div>
+                 <div className={`transition-opacity ${isAutoTurn ? 'opacity-100' : 'opacity-40 pointer-events-none'}`}>
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="text-[13px] font-bold text-[#2C2925]">滾動速度</span>
+                      <span className="text-[12px] text-[#8C867E]">x {autoTurnSpeed}</span>
+                    </div>
+                    <input type="range" min={1} max={5} step={1} value={autoTurnSpeed} onChange={e => setAutoTurnSpeed(Number(e.target.value))} className="w-full accent-[#C59B58]" />
+                 </div>
+              </div>
+            )}
+
+            {/* 文字設定面板 */}
             {showReaderSettings && (
               <div className="absolute top-14 right-2 w-64 bg-white rounded-2xl shadow-xl border border-[#EAE4DB] p-4 flex flex-col gap-4 animate-in fade-in slide-in-from-top-2 z-30" onClick={e => e.stopPropagation()}>
                  <div>
@@ -871,13 +1103,13 @@ export default function App() {
                       <button onClick={() => setReaderTheme('custom')} className={`flex-1 py-1.5 text-[12px] rounded-md ${readerTheme==='custom' ? 'bg-[#F5ECD9] shadow-sm font-bold text-[#C59B58]' : 'text-[#8C867E]'}`}>自訂</button>
                     </div>
                  </div>
-                 <button onClick={() => { setTab('settings'); setReaderBook(null); setShowReaderToolbar(false); setShowReaderSettings(false); }} className="w-full py-2 text-[12px] text-[#C59B58] font-bold border border-[#C59B58] rounded-lg mt-1 hover:bg-[#F5ECD9] transition-colors">前往完整設定</button>
+                 <button onClick={() => { setTab('settings'); setReaderBook(null); setShowReaderToolbar(false); setShowReaderSettings(false); setIsAutoTurn(false); }} className="w-full py-2 text-[12px] text-[#C59B58] font-bold border border-[#C59B58] rounded-lg mt-1 hover:bg-[#F5ECD9] transition-colors">前往完整設定</button>
               </div>
             )}
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto cursor-pointer flex justify-center pb-20 no-scrollbar" onClick={() => { setShowReaderToolbar(!showReaderToolbar); setShowReaderSettings(false); }}>
+        <div ref={readerScrollRef} className="flex-1 overflow-y-auto cursor-pointer flex justify-center pb-20 no-scrollbar" onClick={() => { setShowReaderToolbar(!showReaderToolbar); setShowReaderSettings(false); setShowAutoTurnSettings(false); }}>
           {readerBook.isComic ? (
              <div className="w-full h-full flex items-center justify-center flex-col gap-4 text-white/50 p-6">
                 <img src={readerBook.cover} alt="Comic Page" className="max-w-full max-h-[70vh] object-contain rounded-md shadow-2xl" />
@@ -885,16 +1117,36 @@ export default function App() {
              </div>
           ) : (
             <div className="w-full max-w-2xl px-6 py-24 flex flex-col" style={{ gap: `${lineSpacing}rem` }}>
-              <h1 className="text-[28px] font-bold mb-8 text-center tracking-widest font-serif" style={{ color: currentTextColor }}>第一章：晨光微露</h1>
-              <p className="text-justify indent-8" style={{ color: currentTextColor, fontSize, lineHeight: lineSpacing, letterSpacing: `${letterSpacing}em`, fontFamily }}>
-                晨光透過半開的窗簾灑進房間，書頁邊緣泛著柔和的光澤。他把昨天未讀完的段落重新翻回，停在那行被鉛筆淡淡畫下底線的句子前。
-              </p>
-              <p className="text-justify indent-8" style={{ color: currentTextColor, fontSize, lineHeight: lineSpacing, letterSpacing: `${letterSpacing}em`, fontFamily }}>
-                這段文字是動態渲染的。您可以隨時點擊畫面上方工具列的「字體(A)」圖示即時調整字級與背景，或者前往「設定」頁面進行更進階的排版微調。
-              </p>
-              <p className="text-justify indent-8" style={{ color: currentTextColor, fontSize, lineHeight: lineSpacing, letterSpacing: `${letterSpacing}em`, fontFamily }}>
-                這套「溫潤極簡閱讀系統」結合了最新的 React 架構與樣式，並完美重現了設計稿中的視覺風格。
-              </p>
+              <h1 className="text-[28px] font-bold mb-8 text-center tracking-widest font-serif" style={{ color: currentTextColor }}>
+                {readerBook.id === '1' ? '第一章：晨光微露' : `第一章：${readerBook.title} 的起點`}
+              </h1>
+              
+              {/* 動態判斷：如果是預設的測試書本(慶餘年)，顯示測試文字；否則將簡介當成預覽內文 */}
+              {readerBook.id === '1' ? (
+                <>
+                  <p className="text-justify indent-8" style={{ color: currentTextColor, fontSize, lineHeight: lineSpacing, letterSpacing: `${letterSpacing}em`, fontFamily }}>
+                    晨光透過半開的窗簾灑進房間，書頁邊緣泛著柔和的光澤。他把昨天未讀完的段落重新翻回，停在那行被鉛筆淡淡畫下底線的句子前。
+                  </p>
+                  <p className="text-justify indent-8" style={{ color: currentTextColor, fontSize, lineHeight: lineSpacing, letterSpacing: `${letterSpacing}em`, fontFamily }}>
+                    這段文字是動態渲染的。您可以隨時點擊畫面上方工具列的「字體(A)」圖示即時調整字級與背景，或者前往「設定」頁面進行更進階的排版微調。
+                  </p>
+                  <p className="text-justify indent-8" style={{ color: currentTextColor, fontSize, lineHeight: lineSpacing, letterSpacing: `${letterSpacing}em`, fontFamily }}>
+                    這套「溫潤極簡閱讀系統」結合了最新的 React 架構與樣式，並完美重現了設計稿中的視覺風格。
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="text-justify indent-8" style={{ color: currentTextColor, fontSize, lineHeight: lineSpacing, letterSpacing: `${letterSpacing}em`, fontFamily }}>
+                    這是《{readerBook.title}》的閱讀預覽畫面。
+                  </p>
+                  <p className="text-justify indent-8" style={{ color: currentTextColor, fontSize, lineHeight: lineSpacing, letterSpacing: `${letterSpacing}em`, fontFamily }}>
+                    由於這是您新上傳或匯入的書籍，我們將其簡介作為此處的內文預覽：
+                  </p>
+                  <p className="text-justify indent-8" style={{ color: currentTextColor, fontSize, lineHeight: lineSpacing, letterSpacing: `${letterSpacing}em`, fontFamily }}>
+                    「{readerBook.description}」
+                  </p>
+                </>
+              )}
             </div>
           )}
         </div>
@@ -932,7 +1184,7 @@ export default function App() {
            </div>
         </div>
 
-        <main className="flex-1 overflow-y-auto no-scrollbar relative flex flex-col">
+        <main className="flex-1 overflow-y-auto no-scrollbar relative flex flex-col min-h-0">
           {tab === 'library' && renderLibraryView()}
           {tab === 'wiki' && renderWikiView()}
           {tab === 'bookmarks' && renderBookmarksView()}
